@@ -38,7 +38,7 @@ A complete, production-ready email management system that combines a modern Reac
 
 ### Step 1: Clone and Setup Project Structure
 
-\`\`\`bash
+```bash
 # The project structure should look like this:
 email-agent/
 ├── app/                    # Next.js app directory
@@ -54,24 +54,24 @@ email-agent/
 │   ├── .env              # Environment variables template
 │   └── credentials.json  # Gmail credentials template
 └── README.md
-\`\`\`
+```
 
 ### Step 2: Backend Setup
 
 1. **Install Python dependencies:**
-   \`\`\`bash
+   ```bash
    cd backend
    pip install -r requirements.txt
-   \`\`\`
+   ```
 
 2. **Set up environment variables:**
-   \`\`\`bash
+   ```bash
    # Copy the example file
    cp .env.example .env
    
    # Edit .env and add your OpenAI API key
    OPENAI_API_KEY=your_openai_api_key_here
-   \`\`\`
+   ```
 
 3. **Configure Gmail API:**
    - Go to [Google Cloud Console](https://console.cloud.google.com/)
@@ -81,23 +81,23 @@ email-agent/
    - Download credentials and save as `backend/credentials.json`
 
 4. **Start the Python backend:**
-   \`\`\`bash
+   ```bash
    python run_backend.py
-   \`\`\`
+   ```
    The backend will run on http://localhost:8000
 
 ### Step 3: Frontend Setup
 
 1. **Install Node.js dependencies:**
-   \`\`\`bash
+   ```bash
    # From project root
    npm install
-   \`\`\`
+   ```
 
 2. **Start the Next.js development server:**
-   \`\`\`bash
+   ```bash
    npm run dev
-   \`\`\`
+   ```
    The frontend will run on http://localhost:3000
 
 ### Step 4: First Run Authentication
@@ -138,7 +138,7 @@ email-agent/
 
 ## Project Structure
 
-\`\`\`
+```
 email-agent/
 ├── app/
 │   ├── layout.tsx          # Root layout with fonts
@@ -161,18 +161,18 @@ email-agent/
 │   ├── requirements.txt  # Python dependencies
 │   └── .env.example     # Environment template
 └── package.json         # Node.js dependencies
-\`\`\`
+```
 
 ## Deployment
 
 ### Development
-\`\`\`bash
+```bash
 # Terminal 1: Start backend
 cd backend && python run_backend.py
 
 # Terminal 2: Start frontend
 npm run dev
-\`\`\`
+```
 
 ### Production
 1. **Backend**: Deploy FastAPI app using uvicorn, gunicorn, or Docker
@@ -183,7 +183,7 @@ npm run dev
 ## Configuration
 
 ### Environment Variables
-\`\`\`bash
+```bash
 # Backend (.env)
 OPENAI_API_KEY=your_openai_api_key
 DATABASE_PATH=assistant.db
@@ -192,7 +192,7 @@ API_PORT=8000
 
 # Frontend (if needed)
 NEXT_PUBLIC_API_URL=http://localhost:8000
-\`\`\`
+```
 
 ### Gmail API Setup
 1. Enable Gmail API in Google Cloud Console
