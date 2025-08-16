@@ -42,14 +42,19 @@ def init_db():
 
 def generate_reply(email_text: str, sender: str) -> str:
     """
-    Generate a polite, context-aware reply using GPT.
+    Draft a short, professional reply on **my behalf** (Saral),
+    **to the sender**. Always address the sender by their name
+    (extracted from email 'from' header), and write the reply
+    in a polite 2-5 sentence tone.
     """
+    sender_name = sender.split("<")[0].strip()
     system_prompt = (
-        "You are an email assistant. Draft a short, professional and helpful reply to the following email:"
+        "You are an email assistant writing replies on behalf of Saral. Draft a short, professional and helpful reply to the sender below. Respond **as Saral**, addressing the **sender by name** and using an appropriate viewpoint (e.g., 'your contributions', not 'my'). Do not add subject while generating the response"
     )
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": email_text},
+        # {"role": "user", "content": f"Sender: {sender_name}\n\nEmail:\n{email_text}"},
     ]
     completion = client.chat.completions.create(
         model="gpt-4o-mini",
