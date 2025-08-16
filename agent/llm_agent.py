@@ -1,61 +1,69 @@
 # agent/llm_agent.py
+
 import os
 import json
-from typing import List, Dict
-
-from openai import OpenAI
+import sqlite3
 from dotenv import load_dotenv
+from openai import OpenAI
 
 from agent.functions import (
     generate_reply,
     schedule_meeting,
     summarize_email,
     add_to_todo,
-    init_db,
 )
 
-from agent.gmail import send_email, mark_as_read
+from agent.gmail import fetch_thread, send_email, mark_as_read
 
-import sqlite3
+# Settings
+AUTO_SEND = True          # flip to True to actually send emails
+SUMMARY_SENTENCE_MAX = 4   # max sentences in thread summary
 
-# ------------------ Settings ------------------
 
-AUTO_SEND = False  # set to True when you are ready to actually send emails
-
+# Init
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 DB_PATH = "assistant.db"
 
-# ----------------- Persistence ------------------
 
-def remember_email_processed(email_id: str):
-    init_db()
+def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE IF NOT EXISTS processed_emails (id TEXT PRIMARY KEY)"
-    )
-    cur.execute(
-        "INSERT OR IGNORE INTO processed_emails (id) VALUES (?)", (email_id,)
-    )
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS threads (
+            thread_id TEXT PRIMARY KEY,
+            summary TEXT,
+            last_action TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
 
-def has_processed(email_id: str) -> bool:
+def get_thread_memory(thread_id: str):
     init_db()
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute(
-        "CREATE TABLE IF NOT EXISTS processed_emails (id TEXT PRIMARY KEY)"
-    )
-    cur.execute("SELECT 1 FROM processed_emails WHERE id=?", (email_id,))
-    result = cur.fetchone()
+    cur.execute("SELECT summary, last_action FROM threads WHERE thread_id=?", (thread_id,))
+    row = cur.fetchone()
     conn.close()
-    return result is not None
+    return row if row else (None, None)
 
 
-# ------------------ Tools Schema ------------------
+def update_thread_memory(thread_id: str, summary: str, last_action: str):
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO threads (thread_id, summary, last_action)
+        VALUES (?, ?, ?)
+        ON CONFLICT(thread_id) DO UPDATE SET summary=?, last_action=?
+    """, (thread_id, summary, last_action, summary, last_action))
+    conn.commit()
+    conn.close()
+
+#  Tools Schema
 
 # Describing the tools I want GPT to be able to call
 FUNCTIONS = [
@@ -121,27 +129,31 @@ FUNCTIONS = [
     },
 ]
 
+def decide_action(email):
+    """
+    Decides the next function call (if any) using GPT-4 function calling.
+    Includes past thread memory if present.
+    """
+    thread_id = email["threadId"]
+    previous_summary, previous_action = get_thread_memory(thread_id)
 
-def decide_action(email: Dict):
+    system_prompt = (
+        "You are an autonomous email assistant. Based on the user's email you should "
+        "decide which function to call. Only respond with a function call in JSON. "
+    )
+
+    if previous_summary:
+        system_prompt += (
+            f"Here is the previous conversation summary: {previous_summary}. "
+            f"Last action taken was: {previous_action}. "
+            "Only act if new email requires a new action."
+        )
+
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a smart autonomous email assistant. "
-                "Based on the user's email you should decide which function to call. "
-                "Only respond with a function call in JSON."
-            ),
-        },
-        {
-            "role": "user",
-            "content": f"Email from: {email['from']}\n"
-                       f"Subject: {email['subject']}\n"
-                       f"Body: {email['body']}\n"
-                       "When calling functions:\n"
-                        "- `email_text` should be the Body text.\n"
-                        "- `sender` should be exactly the From field.\n"
-                        "- If the function requires parameters not in the email, leave them as empty strings.",
-        },
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Email from: {email['from']}\n"
+                                    # f"Subject: {email['subject']}\n" # Only the latest incoming message body is passed to GPT for deciding next action
+                                    f"Body: {email['body']}"},
     ]
 
     response = client.chat.completions.create(
@@ -152,67 +164,88 @@ def decide_action(email: Dict):
     )
 
     message = response.choices[0].message
+    if not message.tool_calls:
+        return "no_action", None
 
-    if message.tool_calls:
-        tool_call = message.tool_calls[0]
-        name = tool_call.function.name
-        args = json.loads(tool_call.function.arguments)
-        # print(f"[GPT decided to call function: {name}]")
-        
-        # Fill in missing parameters
-        if name == "generate_reply":
-            args.setdefault("email_text", email.get("body", ""))
-            args.setdefault("sender", email.get("from", ""))
-        elif name == "schedule_meeting":
-            args.setdefault("datetime", "")
-            args.setdefault("topic", "")
-            args.setdefault("attendees", "")
-        elif name == "summarize_email":
-            args.setdefault("email_text", email.get("body", ""))
-        elif name == "add_to_todo":
-            args.setdefault("task", "")
-            args.setdefault("due_date", "")
+    tool_call = message.tool_calls[0]
+    fn_name = tool_call.function.name
+    arguments = json.loads(tool_call.function.arguments)
 
+    # Fill in missing parameters
+    if fn_name == "generate_reply":
+        arguments.setdefault("email_text", email.get("body", ""))
+        arguments.setdefault("sender", email.get("from", ""))
+    elif fn_name == "schedule_meeting":
+        arguments.setdefault("datetime", "")
+        arguments.setdefault("topic", "")
+        arguments.setdefault("attendees", "")
+    elif fn_name == "summarize_email":
+        arguments.setdefault("email_text", email.get("body", ""))
+    elif fn_name == "add_to_todo":
+        arguments.setdefault("task", "")
+        arguments.setdefault("due_date", "")
 
-        # Execute local handler
-        if name == "generate_reply":
-            reply_text = generate_reply(**args)
-            if AUTO_SEND:
-                send_email(
-                    to=email["from"],
-                    subject=f"Re: {email['subject']}",
-                    body=reply_text
-                )
-            print(f"[Drafted reply]\n{reply_text}\n")
-            mark_as_read(email["id"])
-            remember_email_processed(email["id"])
-            return "reply_sent"
-        elif name == "schedule_meeting":
-            out = schedule_meeting(**args)
-            mark_as_read(email["id"])
-            remember_email_processed(email["id"])
-            return str(out)
-        elif name == "summarize_email":
-            summary = summarize_email(**args)
-            mark_as_read(email["id"])
-            remember_email_processed(email["id"])
-            return summary
-        elif name == "add_to_todo":
-            out = add_to_todo(**args)
-            mark_as_read(email["id"])
-            remember_email_processed(email["id"])
-            return str(out)
-    else:
-        return "no_action"
+    if fn_name == "generate_reply":
+        reply = generate_reply(**arguments)
+        if AUTO_SEND:
+            send_email(to=email["from"], subject=f"Re: {email['subject']}", body=reply)
+            print("Sent email.")
+        print("[Draft reply]\n", reply)
+        mark_as_read(email["id"])
+        return "reply_sent", reply
+
+    elif fn_name == "schedule_meeting":
+        out = schedule_meeting(**arguments)
+        mark_as_read(email["id"])
+        return "scheduled_meeting", str(out)
+
+    elif fn_name == "summarize_email":
+        s = summarize_email(**arguments)
+        mark_as_read(email["id"])
+        return "summarized", s
+
+    elif fn_name == "add_to_todo":
+        out = add_to_todo(**arguments)
+        mark_as_read(email["id"])
+        return "todo_added", str(out)
+
+    return "no_action", None
 
 
-def process_emails(emails: List[Dict]):
+def get_new_thread_summary(full_thread_messages, max_sentences=4):
+    """
+    GPT call to compress entire conversation thread into N sentences.
+    """
+    thread_text = "\n\n".join(
+        [f"From: {m['from']}\n{m['body']}" for m in full_thread_messages]
+    )
+
+    messages = [
+        {"role": "system", "content": f"Summarize this conversation in at most {max_sentences} sentences."},
+        {"role": "user", "content": thread_text},
+    ]
+    completion = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages
+    )
+    return completion.choices[0].message.content.strip()
+
+
+def process_emails(emails):
     for email in emails:
-        if has_processed(email["id"]):
-            print(f"Skipping already processed email: {email['subject']}")
-            continue
+        thread_id = email["threadId"]
+
         print("\n--- New Email ---")
         print("From:", email["from"])
         print("Subject:", email["subject"])
-        action_output = decide_action(email)
-        print("Agent Output:", action_output)
+
+        action_taken, agent_output = decide_action(email)
+        print("Action:", action_taken)
+
+        if action_taken != "no_action":
+            full_thread = fetch_thread(thread_id)
+            summary = get_new_thread_summary(full_thread, SUMMARY_SENTENCE_MAX)
+            update_thread_memory(thread_id, summary, action_taken)
+            print("Memory updated:", summary)
+        else:
+            print("No action needed. (Possibly redundant message)")
